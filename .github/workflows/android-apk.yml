@@ -66,6 +66,13 @@ jobs:
           tail -n 100 build.log
 
           exit "$result"
+                - name: Save full error log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ARS-DJ-build-log
+          path: build.log
+          if-no-files-found: warn
 
       - name: Upload APK
         if: success()
