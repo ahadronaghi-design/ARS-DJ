@@ -54,10 +54,15 @@ jobs:
           result=$?
 
           echo "========== ERROR SUMMARY =========="
-          grep -ni -B 5 -A 12 -E \
-            'What went wrong|^e: |error:|FAILURE:|Caused by:|Manifest merger failed|Android resource linking failed|Could not resolve|Compilation error' \
-            build.log | tail -n 180 || true
+                    echo "========== ERROR SUMMARY =========="
+          grep -ni -B 4 -A 15 -E \
+            'What went wrong|Execution failed for task|^e: |error:|FAILURE:|Caused by:|Manifest merger failed|Android resource linking failed|Could not resolve|Compilation error|Duplicate class|DexArchiveMergerException|Could not resolve all files' \
+            build.log | tail -n 220 || true
 
+          echo "========== GRADLE FAILURE MARKERS =========="
+          grep -ni -E \
+            'BUILD FAILED|Execution failed|Exception|Error:|Could not resolve|Duplicate class|failed' \
+            build.log | tail -n 100 || true
           echo "========== LAST 100 LOG LINES =========="
           tail -n 100 build.log
 
@@ -68,5 +73,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ARS-DJ-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+      w    path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
