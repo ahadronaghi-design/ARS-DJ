@@ -1,4 +1,3 @@
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -9,6 +8,14 @@ android {
     namespace = "com.arsdj"
     compileSdk = 35
 
+    defaultConfig {
+        applicationId = "com.arsdj"
+        minSdk = 24
+        targetSdk = 35
+        versionCode = 1
+        versionName = "1.0"
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -16,14 +23,6 @@ android {
 
     kotlinOptions {
         jvmTarget = "17"
-    }
-
-    defaultConfig {
-        applicationId = "com.arsdj"
-        minSdk = 24
-        targetSdk = 35
-        versionCode = 1
-        versionName = "1.0"
     }
 
     buildFeatures {
@@ -38,6 +37,7 @@ dependencies {
     implementation(
         platform("androidx.compose:compose-bom:2024.12.01")
     )
+
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
@@ -45,6 +45,11 @@ dependencies {
 
     implementation(
         "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0"
+    )
+
+    // Audio mixing engine
+    implementation(
+        "dev.ffmpegkit-maintained:ffmpeg-kit-audio:8.1.9"
     )
 
     debugImplementation("androidx.compose.ui:ui-tooling")
