@@ -35,6 +35,7 @@ jobs:
           fi
 
           yes | "$SDKMANAGER" --licenses >/dev/null || true
+
           "$SDKMANAGER" --install \
             "platform-tools" \
             "platforms;android-35" \
@@ -46,6 +47,7 @@ jobs:
           gradle-version: "8.10.2"
 
       - name: Build and diagnose errors
+        id: build
         shell: bash
         run: |
           set +e
@@ -54,7 +56,7 @@ jobs:
 
           echo "========== ERROR SUMMARY =========="
           grep -ni -B 5 -A 15 -E \
-            'What went wrong|Execution failed for task|^e: |error:|FAILURE:|Caused by:|Manifest merger failed|Android resource linking failed|Could not resolve|Compilation error|Duplicate class|DexArchiveMergerException|Could not resolve all files' \
+            'What went wrong|Execution failed for task|^e: |error:|FAILURE:|Caused by:|Manifest merger failed|Android resource linking failed|Could not resolve|Compilation error|Duplicate class|Could not resolve all files' \
             build.log | tail -n 220 || true
 
           echo "========== GRADLE FAILURE MARKERS =========="
@@ -66,7 +68,8 @@ jobs:
           tail -n 100 build.log
 
           exit "$result"
-                - name: Save full error log
+
+      - name: Upload full error log
         if: always()
         uses: actions/upload-artifact@v4
         with:
