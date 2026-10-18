@@ -1,11 +1,11 @@
 package com.arsdj.library
 
 import android.content.Context
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.ReturnCode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
-import com.arthenica.ffmpegkit.FFmpegKit
-import com.arthenica.ffmpegkit.ReturnCode
 import java.io.File
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -15,106 +15,109 @@ class AudioMixEngine(private val context: Context) {
     suspend fun mix(
         tracks: List<AudioTrack>,
         outputFile: File,
-        crossfadeSeconds: Int = 4
+        crossfadeSeconds: Int = 4,
+        volume: Float = 1f,
+        bassDb: Float = 0f
     ): File = withContext(Dispatchers.IO) {
 
         require(tracks.isNotEmpty()) {
             "لطفاً حداقل یک آهنگ انتخاب کنید."
         }
 
-        val inputFiles = mutableListOf<File>()
+        val inputs = mutableListOf<File>()
 
         try {
+            // کپی آهنگ‌ها به حافظه موقت برنامه
             tracks.forEachIndexed { index, track ->
-                val inputFile = File(
+                val file = File(
                     context.cacheDir,
                     "ars_dj_input_$index.audio"
                 )
 
-                val inputStream =
-                    context.contentResolver.openInputStream(track.uri)
-                        ?: throw IllegalStateException(
-                            "خواندن آهنگ ممکن نیست: ${track.title}"
-                        )
+                val stream = context.contentResolver
+                    .openInputStream(track.uri)
+                    ?: error("خواندن آهنگ ممکن نیست: ${track.title}")
 
-                inputStream.use { source ->
-                    inputFile.outputStream().use { destination ->
-                        source.copyTo(destination)
+                stream.use { source ->
+                    file.outputStream().use { target ->
+                        source.copyTo(target)
                     }
                 }
 
-                inputFiles.add(inputFile)
+                inputs.add(file)
             }
 
             outputFile.parentFile?.mkdirs()
 
-            val inputs = inputFiles.joinToString(" ") { file ->
-                "-i ${quote(file.absolutePath)}"
+            val inputArgs = inputs.joinToString(" ") {
+                "-i ${quote(it.absolutePath)}"
             }
 
             val filters = mutableListOf<String>()
 
-            inputFiles.indices.forEach { index ->
+            // یکسان‌سازی نرخ نمونه‌برداری و کانال‌های صوتی
+            inputs.indices.forEach { i ->
                 filters.add(
-                    "[$index:a]aresample=44100," +
-                    "aformat=sample_fmts=fltp:channel_layouts=stereo" +
-                    "[src$index]"
+                    "[$i:a]aresample=44100," +
+                    "aformat=sample_fmts=fltp:channel_layouts=stereo[src$i]"
                 )
             }
 
-            val fade = crossfadeSeconds.coerceIn(1, 8)
-            var finalLabel = "src0"
+            // اتصال آهنگ‌ها با انتقال نرم
+            var lastLabel = "src0"
 
-            if (inputFiles.size > 1) {
-                var previousLabel = "src0"
+            for (i in 1 until inputs.size) {
+                val nextLabel = "mix$i"
 
-                for (index in 1 until inputFiles.size) {
-                    val outputLabel = "mix$index"
+                filters.add(
+                    "[$lastLabel][src$i]" +
+                    "acrossfade=d=${crossfadeSeconds.coerceIn(1, 8)}:" +
+                    "c1=tri:c2=tri[$nextLabel]"
+                )
 
-                    filters.add(
-                        "[$previousLabel][src$index]" +
-                        "acrossfade=d=$fade:c1=tri:c2=tri" +
-                        "[$outputLabel]"
-                    )
-
-                    previousLabel = outputLabel
-                }
-
-                finalLabel = previousLabel
+                lastLabel = nextLabel
             }
 
-            val command = buildString {
-                append("-y ")
-                append(inputs)
-                append(" -filter_complex ")
-                append(quote(filters.joinToString(";")))
-                append(" -map ")
-                append(quote("[$finalLabel]"))
-                append(" -c:a libmp3lame -q:a 2 ")
-                append(quote(outputFile.absolutePath))
-            }
+            // تنظیم بیس و حجم صدای خروجی
+            filters.add(
+                "[$lastLabel]" +
+                "bass=g=${bassDb.coerceIn(0f, 12f)}:f=110," +
+                "volume=${volume.coerceIn(0.25f, 1.5f)}[out]"
+            )
 
+            val filterComplex = filters.joinToString(";")
+
+            val command =
+                "-y $inputArgs " +
+                "-filter_complex ${quote(filterComplex)} " +
+                "-map ${quote("[out]")} " +
+                "-c:a libmp3lame -q:a 2 " +
+                quote(outputFile.absolutePath)
+
+            // اجرای موتور FFmpeg و بررسی نتیجه
             suspendCancellableCoroutine { continuation ->
                 FFmpegKit.executeAsync(command) { session ->
+
                     if (!continuation.isActive) {
                         return@executeAsync
                     }
 
-                    val returnCode = session.returnCode
-
-                    if (ReturnCode.isSuccess(returnCode)) {
+                    if (ReturnCode.isSuccess(session.returnCode)) {
                         continuation.resume(outputFile)
                     } else {
                         continuation.resumeWithException(
                             IllegalStateException(
-                                "ساخت میکس ناموفق بود. کد خطا: $returnCode"
+                                "ساخت میکس ناموفق بود. " +
+                                "کد خطا: ${session.returnCode}"
                             )
                         )
                     }
                 }
             }
+
         } finally {
-            inputFiles.forEach { it.delete() }
+            // پاک‌سازی فایل‌های موقت
+            inputs.forEach { it.delete() }
         }
     }
 
