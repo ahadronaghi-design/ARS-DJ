@@ -16,6 +16,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -34,6 +36,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.arsdj.library.AudioAnalysisEngine
 import com.arsdj.library.AudioMixEngine
+import com.arsdj.library.AiRemixEngine
 import com.arsdj.library.AudioTrack
 import com.arsdj.library.MediaStoreScanner
 import kotlinx.coroutines.Dispatchers
@@ -103,6 +106,32 @@ class MainActivity : ComponentActivity() {
                             throw e
                         }
                     },
+                    createAiRemix = { original, reference, style, intensity, destination ->
+                        withContext(Dispatchers.IO) {
+                            val originalFile = copyTrackToCache(original, "arsdj_remix_original")
+                            val referenceFile = copyTrackToCache(reference, "arsdj_remix_reference")
+                            val outputDir = File(cacheDir, "ars_dj_output").apply { mkdirs() }
+                            val output = File(outputDir, "ARS_DJ_AI_Remix_${System.currentTimeMillis()}.mp3")
+                            try {
+                                val originalAnalysis = AudioAnalysisEngine.analyze(originalFile.absolutePath, cacheDir)
+                                val referenceAnalysis = AudioAnalysisEngine.analyze(referenceFile.absolutePath, cacheDir)
+                                AiRemixEngine.create(
+                                    originalFile, referenceFile, output,
+                                    originalAnalysis, referenceAnalysis, style, intensity
+                                )
+                                val out = contentResolver.openOutputStream(destination, "w")
+                                    ?: error("امکان نوشتن در محل انتخابی وجود ندارد.")
+                                out.use { target -> output.inputStream().use { it.copyTo(target) } }
+                                output
+                            } catch (e: Exception) {
+                                output.delete()
+                                throw e
+                            } finally {
+                                originalFile.delete()
+                                referenceFile.delete()
+                            }
+                        }
+                    },
                     playFile = { file -> playLocalFile(file) },
                     previewTrack = { track ->
                         val temp = File(cacheDir, "arsdj_preview_${track.id}.audio")
@@ -122,6 +151,14 @@ class MainActivity : ComponentActivity() {
                 )
             }
         }
+    }
+
+    private fun copyTrackToCache(track: AudioTrack, prefix: String): File {
+        val target = File(cacheDir, "${prefix}_${track.id}_${System.nanoTime()}.mp3")
+        val input = contentResolver.openInputStream(track.uri)
+            ?: error("خواندن آهنگ ممکن نیست: ${track.title}")
+        input.use { source -> target.outputStream().use { sink -> source.copyTo(sink) } }
+        return target
     }
 
     private fun playLocalFile(file: File) {
@@ -164,6 +201,7 @@ private fun ARSApp(
     scanTracks: suspend () -> List<AudioTrack>,
     analyzeTrack: suspend (AudioTrack) -> AudioAnalysisEngine.AnalysisResult,
     createMix: suspend (List<AudioTrack>, Int, Float, Float, android.net.Uri) -> File,
+    createAiRemix: suspend (AudioTrack, AudioTrack, AiRemixEngine.Style, Float, android.net.Uri) -> File,
     playFile: (File) -> Unit,
     previewTrack: (AudioTrack) -> Unit,
     togglePlayback: () -> Unit,
@@ -182,6 +220,12 @@ private fun ARSApp(
     var volume by remember { mutableFloatStateOf(1f) }
     var bass by remember { mutableFloatStateOf(0f) }
     var useSuggestedOrder by remember { mutableStateOf(true) }
+    var remixOriginalId by remember { mutableStateOf<Long?>(null) }
+    var remixReferenceId by remember { mutableStateOf<Long?>(null) }
+    var remixStyle by remember { mutableStateOf(AiRemixEngine.Style.MODERN_POP) }
+    var remixIntensity by remember { mutableFloatStateOf(0.65f) }
+    var remixing by remember { mutableStateOf(false) }
+    var remixOutputFile by remember { mutableStateOf<File?>(null) }
     val analysisResults = remember { mutableStateMapOf<Long, AudioAnalysisEngine.AnalysisResult>() }
     val scope = rememberCoroutineScope()
 
@@ -208,6 +252,31 @@ private fun ARSApp(
                 status = "خطا در ساخت میکس: ${e.localizedMessage ?: "خطای نامشخص"}"
             } finally {
                 mixing = false
+            }
+        }
+    }
+
+    val remixSaveLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("audio/mpeg")) { uri ->
+        if (uri == null) {
+            status = "ذخیره ریمیکس لغو شد."
+        } else {
+            val original = tracks.firstOrNull { it.id == remixOriginalId } ?: tracks.getOrNull(0)
+            val reference = tracks.firstOrNull { it.id == remixReferenceId } ?: tracks.getOrNull(1)
+            if (original == null || reference == null || original.id == reference.id) {
+                status = "برای ریمیکس، دو آهنگ متفاوت انتخاب کن."
+            } else {
+                scope.launch {
+                    remixing = true
+                    status = "در حال تحلیل دو آهنگ و ساخت ریمیکس..."
+                    try {
+                        remixOutputFile = createAiRemix(original, reference, remixStyle, remixIntensity, uri)
+                        status = "ریمیکس آماده و ذخیره شد."
+                    } catch (e: Exception) {
+                        status = "خطا در ساخت ریمیکس: ${e.localizedMessage ?: "خطای نامشخص"}"
+                    } finally {
+                        remixing = false
+                    }
+                }
             }
         }
     }
@@ -255,6 +324,10 @@ private fun ARSApp(
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                         FeatureCard("میکس", "تنظیمات و خروجی", "≋", Modifier.weight(1f)) { page = "mix" }
                         FeatureCard("هوش مصنوعی", "BPM و انرژی", "✧", Modifier.weight(1f)) { page = "ai" }
+                        FeatureCard("AI Remix", "ریمیکس مدرن دو آهنگ", "♫", Modifier.fillMaxWidth()) {
+                            page = "remix"
+                            if (tracks.isEmpty()) loadLibrary()
+                        }
                     }
                     Text(status, color = if (status.contains("خطا")) ErrorRed else TextMuted, fontSize = 12.sp)
                 }
@@ -427,6 +500,70 @@ private fun ARSApp(
                         modifier = Modifier.fillMaxWidth()
                     ) { Text("تحلیل هوشمند آهنگ‌ها") }
                 }
+                "remix" -> {
+                    val remixOriginal = tracks.firstOrNull { it.id == remixOriginalId } ?: tracks.getOrNull(0)
+                    val remixReference = tracks.firstOrNull { it.id == remixReferenceId } ?: tracks.getOrNull(1)
+                    Column(
+                        Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = 18.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text("AI REMIX STUDIO", fontSize = 23.sp, fontWeight = FontWeight.Black, color = Cyan)
+                        Text("آهنگ اصلی را نگه دار؛ آهنگ دوم فقط مرجع تنظیم و حس مدرن باشد.", color = TextMuted, fontSize = 12.sp)
+                        if (tracks.isEmpty()) {
+                            Text("ابتدا کتابخانه موسیقی را بارگذاری کن.", color = TextMuted)
+                            Button(onClick = { loadLibrary() }, modifier = Modifier.fillMaxWidth()) { Text("بارگذاری آهنگ‌ها") }
+                        } else {
+                            TrackPickerCard(
+                                title = "۱. آهنگ اصلی / وکال و ترانه",
+                                track = remixOriginal,
+                                tracks = tracks,
+                                accent = Cyan,
+                                onSelect = { remixOriginalId = it.id }
+                            )
+                            TrackPickerCard(
+                                title = "۲. آهنگ مرجع / سبک ریمیکس",
+                                track = remixReference,
+                                tracks = tracks,
+                                accent = Violet,
+                                onSelect = { remixReferenceId = it.id }
+                            )
+                            Text("سبک تنظیم", color = TextMain, fontWeight = FontWeight.Bold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                AiRemixEngine.Style.values().forEach { style ->
+                                    FilterChip(
+                                        selected = remixStyle == style,
+                                        onClick = { remixStyle = style },
+                                        label = { Text(style.titleFa, fontSize = 11.sp) }
+                                    )
+                                }
+                            }
+                            Text("شدت افکت و تغییر تمپو: ${(remixIntensity * 100).toInt()}٪", color = Cyan)
+                            Slider(value = remixIntensity, onValueChange = { remixIntensity = it }, valueRange = 0f..1f)
+                            Text("نسخهٔ اول به‌صورت آفلاین روی آهنگ اصلی پردازش انجام می‌دهد؛ صدای آهنگ مرجع وارد خروجی نمی‌شود.", color = TextMuted, fontSize = 11.sp)
+                            Button(
+                                onClick = {
+                                    if (remixOriginal == null || remixReference == null || remixOriginal.id == remixReference.id) {
+                                        status = "دو آهنگ متفاوت انتخاب کن."
+                                    } else {
+                                        remixSaveLauncher.launch("ARS_DJ_AI_Remix_${System.currentTimeMillis()}.mp3")
+                                    }
+                                },
+                                enabled = !remixing && tracks.size >= 2 && remixOriginal != null && remixReference != null && remixOriginal.id != remixReference.id,
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Navy)
+                            ) { Text(if (remixing) "در حال ساخت ریمیکس..." else "✦ ساخت و ذخیره ریمیکس MP3") }
+                            if (remixing) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Cyan)
+                            remixOutputFile?.let { file ->
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    Button(onClick = { runCatching { playFile(file); status = "در حال پخش ریمیکس" }.onFailure { status = "خطای پخش: ${it.localizedMessage}" } }) { Text("▶ شنیدن خروجی") }
+                                    OutlinedButton(onClick = { togglePlayback() }) { Text("⏯ مکث") }
+                                    OutlinedButton(onClick = { stopPlayback() }) { Text("■ توقف") }
+                                }
+                            }
+                        }
+                        Text(status, color = if (status.contains("خطا")) ErrorRed else TextMuted, fontSize = 11.sp)
+                    }
+                }
                 else -> { /* Unknown page: keep the screen stable. */ }
             }
 
@@ -435,16 +572,50 @@ private fun ARSApp(
                     Triple("home", "خانه", "⌂"),
                     Triple("library", "موسیقی", "♫"),
                     Triple("mix", "میکس", "≋"),
-                    Triple("ai", "هوشمند", "✧")
+                    Triple("ai", "هوشمند", "✧"),
+                    Triple("remix", "AI Remix", "♫")
                 ).forEach { (id, label, glyph) ->
                     NavigationBarItem(
                         selected = page == id,
                         onClick = {
                             page = id
-                            if ((id == "library" || id == "ai") && tracks.isEmpty()) loadLibrary()
+                            if ((id == "library" || id == "ai" || id == "remix") && tracks.isEmpty()) loadLibrary()
                         },
                         icon = { Text(glyph, fontSize = 20.sp) },
                         label = { Text(label, fontSize = 10.sp) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun TrackPickerCard(
+    title: String,
+    track: AudioTrack?,
+    tracks: List<AudioTrack>,
+    accent: Color,
+    onSelect: (AudioTrack) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Panel)
+            .border(1.dp, accent.copy(alpha = 0.45f), RoundedCornerShape(16.dp)).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text(title, color = accent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Text(track?.title ?: "آهنگی انتخاب نشده", color = TextMain, maxLines = 1, fontWeight = FontWeight.SemiBold)
+        Text(track?.artist ?: "", color = TextMuted, fontSize = 11.sp, maxLines = 1)
+        Box {
+            OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                Text("انتخاب از کتابخانه  ▾")
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                tracks.forEach { candidate ->
+                    DropdownMenuItem(
+                        text = { Text(candidate.title, maxLines = 1) },
+                        onClick = { onSelect(candidate); expanded = false }
                     )
                 }
             }
