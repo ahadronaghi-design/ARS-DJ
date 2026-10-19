@@ -376,5 +376,161 @@ private fun ARSApp(
                     Text(status, color = if (status.contains("خطا")) ErrorRed else TextMuted, fontSize = 11.sp)
                 }
 
-                else -> Column(
-                    Modifier.weight(1f).fillMaxWidth().padding(2
+                "mix" -> Column(
+                    Modifier.weight(1f).fillMaxWidth().padding(22.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Text("میکس هوشمند", fontSize = 24.sp, fontWeight = FontWeight.Bold)
+                    Text("آهنگ‌های انتخاب‌شده: ${chosen.size}", color = TextMuted)
+                    Text("مدت انتقال نرم: ${fade.toInt()} ثانیه", color = Cyan)
+                    Slider(value = fade, onValueChange = { fade = it }, valueRange = 1f..8f, steps = 6)
+                    Text("میزان صدا: ${(volume * 100).toInt()}٪", color = Cyan)
+                    Slider(value = volume, onValueChange = { volume = it }, valueRange = 0.25f..1.5f)
+                    Text("تقویت بیس: ${bass.toInt()} dB", color = Cyan)
+                    Slider(value = bass, onValueChange = { bass = it }, valueRange = 0f..12f, steps = 11)
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Checkbox(checked = useSuggestedOrder, onCheckedChange = { useSuggestedOrder = it })
+                        Text("ترتیب پیشنهادی بر اساس انرژی (پس از تحلیل)", color = TextMain, fontSize = 12.sp)
+                    }
+                    if (chosen.isNotEmpty()) {
+                        Text("ترتیب ساخت میکس:", color = Cyan, fontWeight = FontWeight.Bold)
+                        LazyColumn(Modifier.weight(0.7f, fill = false).heightIn(max = 130.dp)) {
+                            items(chosen, key = { it.id }) { track ->
+                                Text("• ${track.title}", color = TextMuted, fontSize = 12.sp)
+                            }
+                        }
+                    }
+                    Waveform(Modifier.fillMaxWidth().height(52.dp))
+                    Text(status, color = if (status.contains("خطا")) ErrorRed else TextMuted, fontSize = 12.sp)
+                    Button(
+                        onClick = { saveLauncher.launch("ARS_DJ_Mix_${System.currentTimeMillis()}.mp3") },
+                        enabled = chosen.isNotEmpty() && !mixing,
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Cyan, contentColor = Navy)
+                    ) { Text(if (mixing) "در حال ساخت..." else "انتخاب محل ذخیره و ساخت MP3") }
+                    if (mixing) LinearProgressIndicator(Modifier.fillMaxWidth(), color = Cyan)
+                    outputFile?.let { file ->
+                        Text("فایل خروجی آماده است.", color = Cyan)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                runCatching { playFile(file); status = "در حال آماده‌سازی پخش..." }
+                                    .onFailure { status = "خطای پخش: ${it.localizedMessage}" }
+                            }) { Text("▶ پخش خروجی") }
+                            OutlinedButton(onClick = { togglePlayback(); status = "پخش مکث/ادامه شد." }) { Text("⏯ مکث/ادامه") }
+                            OutlinedButton(onClick = { stopPlayback(); status = "پخش متوقف شد." }) { Text("■ توقف") }
+                        }
+                        Text(file.absolutePath, color = TextMuted, fontSize = 10.sp)
+                    }
+                    Button(
+                        onClick = { page = "ai"; if (tracks.isEmpty()) loadLibrary() },
+                        colors = ButtonDefaults.buttonColors(containerColor = Violet, contentColor = TextMain),
+                        modifier = Modifier.fillMaxWidth()
+                    ) { Text("تحلیل هوشمند آهنگ‌ها") }
+                }
+                else -> { /* Unknown page: keep the screen stable. */ }
+            }
+
+            NavigationBar(containerColor = Color(0xFF08172A), contentColor = Cyan) {
+                listOf(
+                    Triple("home", "خانه", "⌂"),
+                    Triple("library", "موسیقی", "♫"),
+                    Triple("mix", "میکس", "≋"),
+                    Triple("ai", "هوشمند", "✧")
+                ).forEach { (id, label, glyph) ->
+                    NavigationBarItem(
+                        selected = page == id,
+                        onClick = {
+                            page = id
+                            if ((id == "library" || id == "ai") && tracks.isEmpty()) loadLibrary()
+                        },
+                        icon = { Text(glyph, fontSize = 20.sp) },
+                        label = { Text(label, fontSize = 10.sp) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+private fun orderedSelectedTracks(
+    tracks: List<AudioTrack>,
+    selected: Set<Long>,
+    results: Map<Long, AudioAnalysisEngine.AnalysisResult>,
+    suggested: Boolean
+): List<AudioTrack> {
+    val chosen = tracks.filter { selected.contains(it.id) }
+    return if (suggested && results.isNotEmpty()) {
+        chosen.sortedWith(
+            compareBy<AudioTrack> { results[it.id]?.energyPercent ?: Int.MAX_VALUE }
+                .thenBy { results[it.id]?.estimatedBpm ?: Int.MAX_VALUE }
+        )
+    } else chosen
+}
+
+private fun loadLibrary(
+    scope: kotlinx.coroutines.CoroutineScope,
+    scanTracks: suspend () -> List<AudioTrack>,
+    onTracks: (List<AudioTrack>) -> Unit,
+    onStatus: (String) -> Unit,
+    onLoading: (Boolean) -> Unit
+) {
+    scope.launch {
+        onLoading(true)
+        runCatching { scanTracks() }
+            .onSuccess { onTracks(it); onStatus("${it.size} آهنگ پیدا شد.") }
+            .onFailure { onStatus("خطا در خواندن آهنگ‌ها: ${it.localizedMessage}") }
+        onLoading(false)
+    }
+}
+
+@Composable
+private fun FeatureCard(title: String, subtitle: String, glyph: String, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.clip(RoundedCornerShape(18.dp)).background(Panel)
+            .border(1.dp, Line, RoundedCornerShape(18.dp)).clickable(onClick = onClick).padding(14.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(Color(0x2227CFFF)), contentAlignment = Alignment.Center) {
+            Text(glyph, color = Cyan, fontSize = 23.sp)
+        }
+        Text(title, color = TextMain, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+        Text(subtitle, color = TextMuted, fontSize = 11.sp)
+    }
+}
+
+@Composable
+private fun ARSLogo(modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = w * .105f
+        drawLine(Brush.linearGradient(listOf(Cyan, Color(0xFF32A8FF))), Offset(w * .18f, h * .78f), Offset(w * .50f, h * .15f), stroke, cap = StrokeCap.Round)
+        drawLine(Brush.linearGradient(listOf(Color(0xFF7778FF), Violet)), Offset(w * .50f, h * .15f), Offset(w * .82f, h * .78f), stroke, cap = StrokeCap.Round)
+        drawLine(Color(0xFF4C7BFF), Offset(w * .34f, h * .48f), Offset(w * .66f, h * .48f), stroke * .72f, cap = StrokeCap.Round)
+    }
+}
+
+@Composable
+private fun Waveform(modifier: Modifier = Modifier) {
+    val heights = listOf(.18f,.34f,.24f,.50f,.78f,.43f,.63f,.91f,.57f,.35f,.72f,.96f,.61f,.42f,.78f,.52f,.30f,.66f,.86f,.48f,.25f,.54f,.73f,.38f,.19f,.45f,.63f,.30f,.18f,.40f,.58f,.27f)
+    Canvas(modifier) {
+        val gap = size.width / (heights.size * 1.6f)
+        val bw = gap * .55f
+        heights.forEachIndexed { i, v ->
+            val x = i * gap + bw
+            val bh = size.height * v
+            drawLine(
+                Brush.verticalGradient(listOf(Cyan, if (i > heights.size * .63) Violet else Color(0xFF167CDA))),
+                Offset(x, (size.height - bh) / 2),
+                Offset(x, (size.height + bh) / 2),
+                bw,
+                cap = StrokeCap.Round
+            )
+        }
+    }
+}
+
+private fun formatDuration(ms: Long): String {
+    val total = (ms / 1000).toInt().coerceAtLeast(0)
+    return "%d:%02d".format(total / 60, total % 60)
+}
